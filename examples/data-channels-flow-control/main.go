@@ -2,15 +2,14 @@ package main
 
 import (
 	"encoding/json"
-	"fmt"
+	"io"
 	"log"
+	"os"
 	"sync/atomic"
 	"time"
-	"os"
-	"io"
 
-	"github.com/pion/webrtc/v2"
 	"github.com/pion/datachannel"
+	"github.com/pion/webrtc/v2"
 )
 
 func check(err error) {
@@ -32,14 +31,14 @@ func setRemoteDescription(pc *webrtc.PeerConnection, sdp []byte) {
 type FlowControlledDC struct {
 	bufferedAmountLowThreshold uint64
 	maxBufferedAmount          uint64
-	bufferedAmountLowSignal    chan struct{}
+	queue                      chan []byte
 	dc                         *webrtc.DataChannel
 	detachedDC                 datachannel.ReadWriteCloser
-	totalBytesReceived uint64
+	totalBytesReceived         uint64
 }
 
 // NewFlowControlledDC --
-func NewFlowControlledDC(dc *webrtc.DataChannel, bufferedAmountLowThreshold uint64, maxBufferedAmount uint64) (*FlowControlledDC, error) {
+func NewFlowControlledDC(dc *webrtc.DataChannel, bufferedAmountLowThreshold, maxBufferedAmount, queueSize uint64) (*FlowControlledDC, error) {
 	dcrwc, err := dc.Detach()
 	if err != nil {
 		return nil, err
@@ -49,28 +48,52 @@ func NewFlowControlledDC(dc *webrtc.DataChannel, bufferedAmountLowThreshold uint
 		detachedDC:                 dcrwc,
 		bufferedAmountLowThreshold: bufferedAmountLowThreshold,
 		maxBufferedAmount:          maxBufferedAmount,
-		bufferedAmountLowSignal:    make(chan struct{}),
+		queue:                      make(chan []byte, queueSize),
 	}
 	dc.SetBufferedAmountLowThreshold(bufferedAmountLowThreshold)
 	dc.OnBufferedAmountLow(func() {
-		fmt.Println("BEFORE")
-		fcdc.bufferedAmountLowSignal <- struct{}{}
-		fmt.Println("AFTER")
+		go fcdc.DrainQueue()
 	})
 	return fcdc, nil
 }
 
 func (fcdc *FlowControlledDC) Read(p []byte) (int, error) {
-	n := len(p)
+	n, err := fcdc.detachedDC.Read(p)
 	atomic.AddUint64(&fcdc.totalBytesReceived, uint64(n))
-	return fcdc.detachedDC.Read(p)
+	return n, err
 }
 
 func (fcdc *FlowControlledDC) Write(p []byte) (int, error) {
-	if fcdc.dc.BufferedAmount() > fcdc.maxBufferedAmount {
-		<-fcdc.bufferedAmountLowSignal
+	fcdc.queue <- p
+	if _, err := fcdc.DrainQueue(); err != nil {
+		return 0, err
 	}
-	return fcdc.detachedDC.Write(p)
+
+	//NOTE: if we return less bytes io.Copy will stop
+	return len(p), nil
+}
+
+func (fcdc *FlowControlledDC) DrainQueue() (int, error) {
+	var bytesSent int
+	for {
+		if len(fcdc.queue) == 0 {
+			break
+		}
+
+		if fcdc.dc.BufferedAmount() >= fcdc.maxBufferedAmount {
+			break
+		}
+
+		p := <-fcdc.queue
+		b, err := fcdc.detachedDC.Write(p)
+		if err != nil {
+			log.Println("ERROR", err)
+			return bytesSent, err
+		}
+
+		bytesSent += b
+	}
+	return bytesSent, nil
 }
 
 func createOfferer() *webrtc.PeerConnection {
@@ -104,20 +127,24 @@ func createOfferer() *webrtc.PeerConnection {
 	// Register channel opening handling
 	dc.OnOpen(func() {
 		// log.Printf("OnOpen: %s-%d. Start sending a series of 1024-byte packets as fast as it can\n", dc.Label(), dc.ID())
-		flowControlledDC, err := NewFlowControlledDC(dc, 1024, 1024*1024*1024)
+		flowControlledDC, err := NewFlowControlledDC(dc, 512*1024, 1024*1024, 100)
 		check(err)
 
-		flowControlledDC.Write(make([]byte, 64000))
-		// f, err := os.Open("./test.mp4")
-		// if err != nil {
-		// 	panic(err)
-		// }
-		// info, err := f.Stat()
-		// if err != nil {
-		// 	panic(err)
-		// }
-		// log.Println(info.Size())
-		// io.Copy(flowControlledDC, f)
+		// _, err = flowControlledDC.Write(make([]byte, 32000))
+		// check(err)
+
+		// _, err = flowControlledDC.Write(make([]byte, 32000))
+		// check(err)
+		f, err := os.Open("./test.mp4")
+		if err != nil {
+			panic(err)
+		}
+		info, err := f.Stat()
+		if err != nil {
+			panic(err)
+		}
+		log.Println(info.Size())
+		io.Copy(flowControlledDC, f)
 	})
 	return pc
 }
@@ -142,7 +169,7 @@ func createAnswerer() *webrtc.PeerConnection {
 
 		// Register channel opening handling
 		dc.OnOpen(func() {
-			flowControlledDC, err := NewFlowControlledDC(dc, 512*1024, 1024*1024)
+			flowControlledDC, err := NewFlowControlledDC(dc, 512*1024, 1024*1024, 100)
 			check(err)
 
 			go func() {
