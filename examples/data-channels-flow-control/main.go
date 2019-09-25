@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"log"
 	"sync/atomic"
 	"time"
@@ -52,7 +53,9 @@ func NewFlowControlledDC(dc *webrtc.DataChannel, bufferedAmountLowThreshold uint
 	}
 	dc.SetBufferedAmountLowThreshold(bufferedAmountLowThreshold)
 	dc.OnBufferedAmountLow(func() {
+		fmt.Println("BEFORE")
 		fcdc.bufferedAmountLowSignal <- struct{}{}
+		fmt.Println("AFTER")
 	})
 	return fcdc, nil
 }
@@ -101,19 +104,20 @@ func createOfferer() *webrtc.PeerConnection {
 	// Register channel opening handling
 	dc.OnOpen(func() {
 		// log.Printf("OnOpen: %s-%d. Start sending a series of 1024-byte packets as fast as it can\n", dc.Label(), dc.ID())
-		flowControlledDC, err := NewFlowControlledDC(dc, 512*1024, 1024*1024)
+		flowControlledDC, err := NewFlowControlledDC(dc, 1024, 1024*1024*1024)
 		check(err)
 
-		f, err := os.Open("./test.mp4")
-		if err != nil {
-			panic(err)
-		}
-		info, err := f.Stat()
-		if err != nil {
-			panic(err)
-		}
-		log.Println(info.Size())
-		io.Copy(flowControlledDC, f)
+		flowControlledDC.Write(make([]byte, 64000))
+		// f, err := os.Open("./test.mp4")
+		// if err != nil {
+		// 	panic(err)
+		// }
+		// info, err := f.Stat()
+		// if err != nil {
+		// 	panic(err)
+		// }
+		// log.Println(info.Size())
+		// io.Copy(flowControlledDC, f)
 	})
 	return pc
 }
