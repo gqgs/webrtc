@@ -130,21 +130,21 @@ func createOfferer() *webrtc.PeerConnection {
 		flowControlledDC, err := NewFlowControlledDC(dc, 512*1024, 1024*1024, 100)
 		check(err)
 
-		// _, err = flowControlledDC.Write(make([]byte, 32000))
-		// check(err)
+		_, err = flowControlledDC.Write(make([]byte, 32000))
+		check(err)
 
-		// _, err = flowControlledDC.Write(make([]byte, 32000))
-		// check(err)
-		f, err := os.Open("./test.mp4")
-		if err != nil {
-			panic(err)
-		}
-		info, err := f.Stat()
-		if err != nil {
-			panic(err)
-		}
-		log.Println(info.Size())
-		io.Copy(flowControlledDC, f)
+		_, err = flowControlledDC.Write(make([]byte, 32000))
+		check(err)
+		// f, err := os.Open("./test.mp4")
+		// if err != nil {
+		// 	panic(err)
+		// }
+		// info, err := f.Stat()
+		// if err != nil {
+		// 	panic(err)
+		// }
+		// log.Println(info.Size())
+		// io.Copy(flowControlledDC, f)
 	})
 	return pc
 }
